@@ -36,6 +36,18 @@ testcocoon {
 osx: LIBS_PRIVATE += -framework AppKit
 darwin: LIBS_PRIVATE += -framework CoreGraphics
 
+# sophgo TDE hardware blit hook (P1): link libvg_lite when the integrator
+# exports QT_TDE_VGLITE_LIBDIR (headers+so under /opt/sophon on the target).
+QT_TDE_VGLITE_INCDIR = $$(QT_TDE_VGLITE_INCDIR)
+QT_TDE_VGLITE_LIBDIR = $$(QT_TDE_VGLITE_LIBDIR)
+!isEmpty(QT_TDE_VGLITE_LIBDIR) {
+    DEFINES += QT_TDE_BLIT
+    INCLUDEPATH += $$QT_TDE_VGLITE_INCDIR
+    LIBS_PRIVATE += -L$$QT_TDE_VGLITE_LIBDIR -lvg_lite
+    SOURCES += painting/qtdeblit.cpp
+    HEADERS += painting/qtdeblit_p.h
+}
+
 CONFIG += simd optimize_full
 
 include(accessible/accessible.pri)

@@ -68,6 +68,7 @@
 #include "qpaintengine_raster_p.h"
 //   #include "qbezier_p.h"
 #include "qoutlinemapper_p.h"
+#include "qtdeblit_p.h"
 
 #include <limits.h>
 #include <algorithm>
@@ -143,6 +144,15 @@ void dumpClip(int width, int height, const QClipData *clip);
 #endif
 
 #define QT_FAST_SPANS
+
+// P1 (sophgo TDE hook): attempt a hardware blit for the simple
+// src-RGB888 -> fb-dst cases before entering the raster paths.
+// Returns true when the engine should return immediately.
+#ifdef QT_TDE_BLIT
+static bool qt_tdeTryBlit(const QRasterPaintEnginePrivate *d,
+                          const QRasterPaintEngineState *s,
+                          const QImage &img, const QRectF &r, const QRectF &sr);
+#endif
 
 
 // A little helper macro to get a better approximation of dimensions.
@@ -2211,6 +2221,13 @@ void QRasterPaintEngine::drawImage(const QPointF &p, const QImage &img)
     QRasterPaintEngineState *s = state();
     qreal scale = img.devicePixelRatio();
 
+#ifdef QT_TDE_BLIT
+    if (qt_tdeTryBlit(d, s, img,
+                      QRectF(p.x(), p.y(), img.width(), img.height()),
+                      QRectF(0, 0, img.width(), img.height())))
+        return;
+#endif
+
     if (scale > 1.0 ||  s->matrix.type() > QTransform::TxTranslate) {
         drawImage(QRectF(p.x(), p.y(), img.width() / scale, img.height() / scale),
                   img,
@@ -2317,6 +2334,11 @@ void QRasterPaintEngine::drawImage(const QRectF &r, const QImage &img, const QRe
     Q_D(QRasterPaintEngine);
     QRasterPaintEngineState *s = state();
     Q_ASSERT(s);
+
+#ifdef QT_TDE_BLIT
+    if (qt_tdeTryBlit(d, s, img, r, sr))
+        return;
+#endif
     int sr_l = qFloor(sr.left());
     int sr_r = qCeil(sr.right()) - 1;
     int sr_t = qFloor(sr.top());
@@ -2555,6 +2577,61 @@ void QRasterPaintEngine::drawImage(const QRectF &r, const QImage &img, const QRe
 /*!
     \reimp
 */
+#ifdef QT_TDE_BLIT
+// P1 (sophgo TDE hook): try to run drawImage as a hardware blit on the
+// TDE 2D engine. Only fires when the destination is the linuxfb backing
+// store whose physical layout was registered by the platform plugin,
+// the source is RGB888 opaque, there is no fancy composition, and the
+// transform is translate or axis-aligned scale. Everything else falls
+// back to the stock raster code (behaviour identical to vanilla Qt).
+static bool qt_tdeTryBlit(const QRasterPaintEnginePrivate *d,
+                          const QRasterPaintEngineState *s,
+                          const QImage &img, const QRectF &dr, const QRectF &srF)
+{
+    if (!QTdeBlit::isAvailable() || !QTdeBlit::hasFramebuffer())
+        return false;
+
+    // Destination must be the backing-store raster buffer whose origin
+    // matches the registered framebuffer; reject transforms beyond
+    // translate/scale, non-opaque composition and any clipping.
+    if (!d->rasterBuffer)
+        return false;
+    const QTransform::TransformationType txType = s->matrix.type();
+    if (txType > QTransform::TxScale)
+        return false;
+    if (d->rasterBuffer->compositionMode != QPainter::CompositionMode_SourceOver)
+        return false;
+    if (s->intOpacity != 256)
+        return false;
+    if (d->clip() != nullptr)
+        return false;
+    if (img.format() != QImage::Format_RGB888)
+        return false;
+
+    // Map source and target to integer pixel geometry.
+    const QRect srcRect = srF.toRect();
+    if (srF != QRectF(srcRect))
+        return false; // fractional source rect: leave to raster
+    QRect dstRect = s->matrix.mapRect(dr).toRect();
+    if (QRectF(dstRect) != s->matrix.mapRect(dr))
+        return false; // fractional target: leave to raster
+    if (dstRect.width() <= 0 || dstRect.height() <= 0)
+        return false;
+
+    QString whyNot;
+    const bool ok = QTdeBlit::blit(img.constBits(), img.bytesPerLine(),
+                                   img.width(), img.height(),
+                                   srcRect, img.format(), dstRect, &whyNot);
+    if (!ok) {
+        static const bool verbose = qEnvironmentVariableIntValue("QT_QPA_TDE_DEBUG") == 1;
+        if (verbose)
+            qDebug("TDE miss: %s", qPrintable(whyNot));
+        return false;
+    }
+    return true;
+}
+#endif
+
 void QRasterPaintEngine::drawTiledPixmap(const QRectF &r, const QPixmap &pixmap, const QPointF &sr)
 {
 #ifdef QT_DEBUG_DRAW
