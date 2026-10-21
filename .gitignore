@@ -1,0 +1,7 @@
+# Build output (cross-compile sysroot & install trees live outside the tree)
+build/
+
+# P1 WIP will be committed when ready; meanwhile keep editor droppings out
+*.orig
+*.rej
+*.swp
