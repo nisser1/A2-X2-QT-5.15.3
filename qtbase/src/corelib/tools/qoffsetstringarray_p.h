@@ -148,7 +148,9 @@ public:
 
     constexpr inline const char *operator[](const int index) const noexcept
     {
-        return m_string.data + m_offsets[qBound(int(0), index, SizeOffsets - 1)];
+        return index >= 0 && index < SizeOffsets ?
+            m_string.data + m_offsets[index] :
+            m_string.data + m_offsets[SizeOffsets - 1];
     }
 
     constexpr inline const char *at(const int index) const noexcept
