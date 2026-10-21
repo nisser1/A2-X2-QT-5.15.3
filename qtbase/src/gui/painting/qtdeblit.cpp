@@ -151,7 +151,7 @@ QRegion QTdeBlit::takeDirty()
 
 bool QTdeBlit::blit(const uchar *srcBits, int srcStride, int srcW, int srcH,
                     const QRect &srcRect, QImage::Format srcFormat,
-                    const QRect &dstRect, QString *whyNot)
+                    const QRect &dstRect, QString *whyNot, const QRect &dstClip)
 {
     QTdeBlit *self = instance();
 
@@ -217,14 +217,30 @@ bool QTdeBlit::blit(const uchar *srcBits, int srcStride, int srcW, int srcH,
 
     // Destination: wrap the framebuffer scanout memory directly.
     // dstRect 已是屏幕坐标（backing-store 空间 = fb 屏幕区）。
-    const QRect screenDst = dstRect;
+    // dstClip（widget 裁剪区）与 dstRect 相交得到硬件实际写入区，
+    // 再按 scale 反推 srcRect 的可见子区， vg_lite_blit_rect 的
+    // rect 参数收源矩形，越界部分由矩阵映射自然裁掉。
+    const QRect visibleDst = dstClip.isNull() ? dstRect : dstRect.intersected(dstClip);
+    if (visibleDst.isEmpty()) {
+        if (whyNot) *whyNot = QStringLiteral("dst fully clipped");
+        return false;
+    }
+    const QRect screenDst = visibleDst;
     if (screenDst.x() < 0 || screenDst.y() < 0
         || screenDst.right() >= self->m_fb.width
         || screenDst.bottom() >= self->m_fb.height) {
         if (whyNot) *whyNot = QStringLiteral("dst out of fb bounds");
-        vg_lite_unmap(&src);
         return false;
     }
+
+    // 可见 dst 子区对应的源子区（等比换算，保留到整数像素）。
+    const float sxAll = float(dstRect.width()) / float(srcRect.width());
+    const float syAll = float(dstRect.height()) / float(srcRect.height());
+    const int visSrcX = srcRect.x() + qRound((visibleDst.x() - dstRect.x()) / sxAll);
+    const int visSrcY = srcRect.y() + qRound((visibleDst.y() - dstRect.y()) / syAll);
+    const int visSrcW = qMax(1, qRound(visibleDst.width() / sxAll));
+    const int visSrcH = qMax(1, qRound(visibleDst.height() / syAll));
+    const QRect visSrc(visSrcX, visSrcY, visSrcW, visSrcH);
 
     vg_lite_buffer_t dst = {};
     dst.width = self->m_fb.width;
@@ -238,20 +254,20 @@ bool QTdeBlit::blit(const uchar *srcBits, int srcStride, int srcW, int srcH,
     dst.memory = nullptr;      // pure device memory, no CPU mapping needed
     dst.address = vg_lite_uint32_t(self->m_fb.physBase);
 
-    const float scaleX = float(dstRect.width()) / float(srcRect.width());
-    const float scaleY = float(dstRect.height()) / float(srcRect.height());
+    const float scaleX = float(visibleDst.width()) / float(visSrc.width());
+    const float scaleY = float(visibleDst.height()) / float(visSrc.height());
 
     // blit_rect applies the matrix to the source rectangle: build a
-    // matrix that maps srcRect onto dstRect (scale + translate), the
+    // matrix that maps visSrc onto visibleDst (scale + translate), the
     // same convention as bmcv_tde_convert.
-    const float dstCx = dstRect.x() + float(dstRect.width()) / 2.0f;
-    const float dstCy = dstRect.y() + float(dstRect.height()) / 2.0f;
-    const float srcCx = srcRect.x() + float(srcRect.width()) / 2.0f;
-    const float srcCy = srcRect.y() + float(srcRect.height()) / 2.0f;
+    const float dstCx = visibleDst.x() + float(visibleDst.width()) / 2.0f;
+    const float dstCy = visibleDst.y() + float(visibleDst.height()) / 2.0f;
+    const float srcCx = visSrc.x() + float(visSrc.width()) / 2.0f;
+    const float srcCy = visSrc.y() + float(visSrc.height()) / 2.0f;
 
     bool ok = self->doBlit(&src, &dst,
-                           vg_lite_rectangle_t{ srcRect.x(), srcRect.y(),
-                                                srcRect.width(), srcRect.height() },
+                           vg_lite_rectangle_t{ visSrc.x(), visSrc.y(),
+                                                visSrc.width(), visSrc.height() },
                            scaleX, scaleY, dstCx, dstCy, srcCx, srcCy, whyNot);
 
     vg_lite_unmap(&src);

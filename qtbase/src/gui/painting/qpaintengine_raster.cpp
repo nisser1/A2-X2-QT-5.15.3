@@ -2603,10 +2603,17 @@ static bool qt_tdeTryBlit(const QRasterPaintEnginePrivate *d,
         return false;
     if (s->intOpacity != 256)
         return false;
-    if (d->clip() != nullptr)
-        return false;
     if (img.format() != QImage::Format_RGB888)
         return false;
+
+    // Widget 裁剪：clipData() 是 drawImage 的真实生效区（含 system clip）。
+    // 矩形 clip 直接交给硬件做子区 blit；非矩形 clip 不值得拆，走 raster。
+    QRect dstClip;
+    if (const QClipData *cd = d->clip()) {
+        if (!cd->hasRectClip)
+            return false;
+        dstClip = cd->clipRect;
+    }
 
     // Map source and target to integer pixel geometry.
     const QRect srcRect = srF.toRect();
@@ -2621,7 +2628,8 @@ static bool qt_tdeTryBlit(const QRasterPaintEnginePrivate *d,
     QString whyNot;
     const bool ok = QTdeBlit::blit(img.constBits(), img.bytesPerLine(),
                                    img.width(), img.height(),
-                                   srcRect, img.format(), dstRect, &whyNot);
+                                   srcRect, img.format(), dstRect, &whyNot,
+                                   dstClip);
     if (!ok) {
         static const bool verbose = qEnvironmentVariableIntValue("QT_QPA_TDE_DEBUG") == 1;
         if (verbose)

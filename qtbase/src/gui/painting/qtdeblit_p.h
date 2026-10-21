@@ -59,11 +59,14 @@ public:
     // rasterBuffer the paint engine would have written to).
     // srcBits/srcStride describe the source image memory; the caller
     // guarantees the memory stays valid for the duration of the call.
+    // dstClip (optional) restricts the write inside dstRect; the parts
+    // of dstRect outside dstClip are left untouched.
     // Returns true if the hardware blit was issued; on false the
     // caller must fall back to the raster path.
     static bool blit(const uchar *srcBits, int srcStride, int srcW, int srcH,
                      const QRect &srcRect, QImage::Format srcFormat,
-                     const QRect &dstRect, QString *whyNot = nullptr);
+                     const QRect &dstRect, QString *whyNot = nullptr,
+                     const QRect &dstClip = QRect());
 
     // fb 物理地址查询（P3 由 linuxfb 注册；也可从 /proc/iomem 探测）
     static ulong probeFramebufferPhys();
