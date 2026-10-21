@@ -44,6 +44,10 @@
 #include <QtCore/QRegularExpression>
 #include <QtGui/QPainter>
 
+#ifdef QT_TDE_BLIT
+#include <QtGui/5.15.3/QtGui/private/qtdeblit_p.h>
+#endif
+
 #include <private/qcore_unix_p.h> // overrides QT_OPEN
 #include <qimage.h>
 #include <qdebug.h>
@@ -390,6 +394,20 @@ bool QLinuxFbScreen::initialize()
     QFbScreen::initializeCompositor();
     mFbScreenImage = QImage(mMmap.data, geometry.width(), geometry.height(), mBytesPerLine, mFormat);
 
+#ifdef QT_TDE_BLIT
+    // P3 (sophgo TDE hook): hand the framebuffer layout to the paint
+    // engine hook so TDE blits can target scanout memory directly.
+    {
+        QTdeBlit::FbInfo fbInfo;
+        fbInfo.physBase = ulong(finfo.smem_start) + ulong(mMmap.offset);
+        fbInfo.width = mFbScreenImage.width();
+        fbInfo.height = mFbScreenImage.height();
+        fbInfo.stride = mBytesPerLine;
+        fbInfo.isRgb888 = (mFormat == QImage::Format_RGB888);
+        QTdeBlit::setFramebuffer(fbInfo);
+    }
+#endif
+
     mCursor = new QFbCursor(this);
 
     mTtyFd = openTtyDevice(ttyDevice);
@@ -404,6 +422,35 @@ bool QLinuxFbScreen::initialize()
 
 QRegion QLinuxFbScreen::doRedraw()
 {
+#ifdef QT_TDE_BLIT
+    // P3 (sophgo TDE hook): TDE 已把这些屏幕区域直接写进 scanout，
+    // 本轮软件合成只重绘其余部分，并把 hw 区域原样并回 touched。
+    const QRegion hwDirty = QTdeBlit::takeDirty();
+    QRegion touched;
+    if (!hwDirty.isEmpty()) {
+        // 让基类跳过 hw 区域：临时从 repaint 集合里减去，合成后恢复。
+        QFbScreen::mRepaintRegion -= hwDirty;
+        touched = QFbScreen::doRedraw();
+        touched += hwDirty;
+    } else {
+        touched = QFbScreen::doRedraw();
+    }
+
+    if (touched.isEmpty())
+        return touched;
+
+    if (!mBlitter)
+        mBlitter = new QPainter(&mFbScreenImage);
+
+    mBlitter->setCompositionMode(QPainter::CompositionMode_Source);
+    for (const QRect &rect : qAsConst(touched)) {
+        if (!hwDirty.intersected(rect).isEmpty())
+            continue; // TDE 已直写 scanout，CPU 不再搬这些像素
+        mBlitter->drawImage(rect, mScreenImage, rect);
+    }
+
+    return touched;
+#else
     QRegion touched = QFbScreen::doRedraw();
 
     if (touched.isEmpty())
@@ -417,6 +464,7 @@ QRegion QLinuxFbScreen::doRedraw()
         mBlitter->drawImage(rect, mScreenImage, rect);
 
     return touched;
+#endif
 }
 
 // grabWindow() grabs "from the screen" not from the backingstores.

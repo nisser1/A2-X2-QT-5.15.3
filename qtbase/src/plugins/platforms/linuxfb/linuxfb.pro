@@ -7,6 +7,16 @@ QT += \
     service_support-private eventdispatcher_support-private \
     fontdatabase_support-private fb_support-private
 
+# sophgo TDE hook (P3): mirror the QtGui QT_TDE_BLIT gate so the linuxfb
+# screen can register the framebuffer layout with the blit hook.
+QT_TDE_VGLITE_LIBDIR = $$(QT_TDE_VGLITE_LIBDIR)
+QT_TDE_VGLITE_INCDIR = $$(QT_TDE_VGLITE_INCDIR)
+!isEmpty(QT_TDE_VGLITE_LIBDIR) {
+    DEFINES += QT_TDE_BLIT
+    INCLUDEPATH += $$QT_TDE_VGLITE_INCDIR
+    LIBS_PRIVATE += -L$$QT_TDE_VGLITE_LIBDIR -lvg_lite
+}
+
 qtHaveModule(input_support-private): \
     QT += input_support-private
 
